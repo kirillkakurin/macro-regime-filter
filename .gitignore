@@ -1,7 +1,9 @@
 # Default ignored files
 /shelf/
 /workspace.xml
-# Environment files
-.env
 
-/outputs/
+# Environment files
+*.env
+
+# Output data
+outputs/
