@@ -1,29 +1,37 @@
 import os
 import math
+import time
 import pandas as pd
 import yfinance as yf
+from google import genai
 from fredapi import Fred
 from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
 load_dotenv("api.env")
-api_key = os.getenv("FRED_API_KEY")
 
-fred = Fred(api_key=api_key)
+fred_api_key = os.getenv("FRED_API_KEY")
+fred = Fred(api_key=fred_api_key)
 
-series_ids = ['DGS10', 'DGS5', 'DGS2', 'DGS3MO']
-tickers = ['QQQ', 'SPY']
-
-start_date = (datetime.now() - timedelta(days=60)).strftime('%Y-%m-%d')
+client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 output_dir = "outputs"
 filename = f"macro_report_{datetime.now().strftime('%Y-%m-%d')}.txt"
 filepath = os.path.join(output_dir, filename)
 
 output_file = open(filepath, "w")
+report_lines = []
+
 def log_print(text):
     print(text)
     output_file.write(text + "\n")
+    report_lines.append(text)
+
+series_ids = ['DGS10', 'DGS5', 'DGS2', 'DGS3MO']
+tickers = ['QQQ', 'SPY']
+
+start_date = (datetime.now() - timedelta(days=60)).strftime('%Y-%m-%d')
+
 
 log_print(f"Run Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
@@ -38,14 +46,25 @@ rate_labels = {
 
 def pull_yield_data(series_ids, start_date):
     data_frames = []
+
+    def get_fred_series_with_retry(series_id, start_date, retries=3):
+        for attempt in range(retries):
+            try:
+                return fred.get_series(series_id, start=start_date)
+            except Exception as e:
+                print(f"Retry {attempt+1}/{retries} for {series_id}: {e}")
+                time.sleep(2)
+
+        raise Exception(f"Failed to fetch {series_id} after retries")
+
     for series_id in series_ids:
-        data = fred.get_series(series_id, start=start_date)
+        data = get_fred_series_with_retry(series_id, start_date)
         data_frames.append(data.rename(series_id))
-    
+
     df = pd.concat(data_frames, axis=1)
     df.index.name = 'Date'
     df = df.dropna().sort_index()
-    
+
     return df
 
 rates_df = pull_yield_data(series_ids, start_date)
@@ -362,6 +381,45 @@ score, bullish_pct, confidence, regime = compute_macro_regime(
     dollar_score
 )
 
-#output summary
+# OUTPUT SUMMARY FIRST
 print_macro_summary(score, bullish_pct, confidence, regime)
+
+# BUILD FULL REPORT TEXT FOR GEMINI
+macro_output = "\n".join(report_lines)
+
+# CREATE GEMINI PROMPT
+prompt = f"""
+You are a professional macro market analyst.
+
+Analyze the following Nasdaq macro dashboard briefly.
+
+Explain:
+1. What the current macro regime suggests
+2. Whether this is bullish or bearish for NQ
+3. Main supporting and opposing forces
+
+Keep response concise and professional.
+
+Dashboard:
+{macro_output}
+"""
+
+# CALL GEMINI
+try:
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt
+    )
+    gemini_analysis = response.text
+
+except Exception as e:
+    gemini_analysis = f"Gemini API Error: {e}"
+
+# WRITE GEMINI ANALYSIS TO OUTPUT
+log_print("\n" + "=" * 40)
+log_print("**AI ANALYSIS**")
+log_print("=" * 40)
+log_print(gemini_analysis)
+
+# CLOSE FILE
 output_file.close()
