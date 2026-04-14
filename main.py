@@ -32,11 +32,9 @@ tickers = ['QQQ', 'SPY']
 
 start_date = (datetime.now() - timedelta(days=60)).strftime('%Y-%m-%d')
 
-
 log_print(f"Run Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 #FRED rates
-
 rate_labels = {
     'DGS10': 'DGS10 (10Y Yield)',
     'DGS5': 'DGS5 (5Y Yield)',
@@ -70,7 +68,6 @@ def pull_yield_data(series_ids, start_date):
 rates_df = pull_yield_data(series_ids, start_date)
 
 #yfinance equities
-
 def pull_equity_data(tickers):
     data = yf.download(tickers, period='60d', interval='1d', auto_adjust=False)['Adj Close']
     data = data.dropna().sort_index()
@@ -161,7 +158,6 @@ credit_df['ratio_10D'] = credit_df['hyg_tlt_ratio'].pct_change(10)
 credit_latest = credit_df.iloc[-1]
 
 #outputs
-
 log_print("\n **CREDIT / DURATION:**")
 
 log_print(f"HYG: {credit_latest['HYG']:.2f} | 1D: {credit_latest['HYG_1D']:.2%} | 5D: {credit_latest['HYG_5D']:.2%} | 10D: {credit_latest['HYG_10D']:.2%}")
@@ -171,7 +167,6 @@ log_print("\n **HYG/TLT (Risk vs Duration):**")
 log_print(f"Value: {credit_latest['hyg_tlt_ratio']:.4f} | 1D: {credit_latest['ratio_1D']:.2%} | 5D: {credit_latest['ratio_5D']:.2%} | 10D: {credit_latest['ratio_10D']:.2%}")
 
 #vix (vol)
-
 vix_df = yf.download('^VIX', period='60d', interval='1d', auto_adjust=False, progress=False)['Adj Close']
 vix_df = vix_df.dropna().sort_index()
 
@@ -211,29 +206,19 @@ log_print("\n **DOLLAR / FX:**")
 log_print(f"UUP (DXY Proxy): {dollar_latest['UUP']:.2f} | 1D: {dollar_latest['UUP_1D']:.2%} | 5D: {dollar_latest['UUP_5D']:.2%}")
 log_print(f"EURUSD: {dollar_latest['EURUSD=X']:.4f} | 1D: {dollar_latest['EURUSD_1D']:.2%} | 5D: {dollar_latest['EURUSD_5D']:.2%}")
 
-#lqd, investment grade credit, optional for now
-
-# credit_df['LQD'] = yf.download('LQD', period='60d', interval='1d', auto_adjust=False)['Adj Close']
-# credit_df['LQD_1D'] = credit_df['LQD'].pct_change(1)
-# credit_df['LQD_5D'] = credit_df['LQD'].pct_change(5)
-# credit_df['LQD_10D'] = credit_df['LQD'].pct_change(10)
-
-# log_print("\nINVESTMENT GRADE (LQD):")
-# log_print(f"LQD: {credit_df.iloc[-1]['LQD']:.2f} | 1D: {credit_df.iloc[-1]['LQD_1D']:.2%} | 5D: {credit_df.iloc[-1]['LQD_5D']:.2%}")
-
-#scoring functions
+# scoring functions
 def score_rates(rates_1d, rates_5d, curve_latest):
     score = 0
 
     for key in ['DGS10', 'DGS2']:
         if rates_1d[key] > 0:
             score -= 0.5
-        else:
+        elif rates_1d[key] < 0:
             score += 0.5
 
         if rates_5d[key] < 0:
             score += 0.25
-        else:
+        elif rates_5d[key] > 0:
             score -= 0.25
 
     if curve_latest['curve_5D'] > 0:
@@ -249,12 +234,12 @@ def score_equities(equity_latest):
 
     if equity_latest['QQQ_5D'] > 0:
         score += 0.5
-    else:
+    elif equity_latest['QQQ_5D'] < 0:
         score -= 0.5
 
     if equity_latest['SPY_5D'] > 0:
         score += 0.5
-    else:
+    elif equity_latest['SPY_5D'] < 0:
         score -= 0.5
 
     return max(-1, min(1, score))
@@ -281,12 +266,12 @@ def score_vix(vix_latest):
 
     if vix_latest['VIX_5D'] < 0:
         score += 0.7
-    else:
+    elif vix_latest['VIX_5D'] > 0:
         score -= 0.7
 
     if vix_latest['VIX_1D'] > 0:
         score -= 0.3
-    else:
+    elif vix_latest['VIX_1D'] < 0:
         score += 0.3
 
     return max(-1, min(1, score))
@@ -298,6 +283,7 @@ def score_dollar(dollar_latest):
     elif dollar_latest['UUP_5D'] > 0:
         return -1
     return 0
+
 
 def compute_macro_regime(
     rates_score,
@@ -316,25 +302,40 @@ def compute_macro_regime(
         "dollar": 0.10
     }
 
-    score = (
-        rates_score * weights["rates"] +
-        vix_score * weights["vix"] +
-        credit_score * weights["credit"] +
-        equities_score * weights["equities"] +
-        growth_score * weights["growth"] +
-        dollar_score * weights["dollar"]
-    )
+    signals = {
+        "rates": rates_score,
+        "vix": vix_score,
+        "credit": credit_score,
+        "equities": equities_score,
+        "growth": growth_score,
+        "dollar": dollar_score
+    }
+
+    #weighted macro score
+    score = sum(signals[name] * weights[name] for name in signals)
 
     bullish_pct = (score + 1) / 2 * 100
     bullish_pct = max(0, min(100, bullish_pct))
 
-    signals = [rates_score, vix_score, credit_score, equities_score, growth_score, dollar_score]
+    #weighted confidence
+    bullish_weight = sum(
+        weights[name] * abs(signals[name])
+        for name in signals
+        if signals[name] > 0
+    )
 
-    bullish = sum(1 for s in signals if s > 0)
-    bearish = sum(1 for s in signals if s < 0)
-    total = bullish + bearish
+    bearish_weight = sum(
+        weights[name] * abs(signals[name])
+        for name in signals
+        if signals[name] < 0
+    )
 
-    confidence = (max(bullish, bearish) / total * 100) if total > 0 else 0
+    active_weight = bullish_weight + bearish_weight
+
+    confidence = (
+        max(bullish_weight, bearish_weight) / active_weight * 100
+        if active_weight > 0 else 0
+    )
 
     if bullish_pct > 60:
         regime = "BULLISH"
@@ -381,45 +382,33 @@ score, bullish_pct, confidence, regime = compute_macro_regime(
     dollar_score
 )
 
-# OUTPUT SUMMARY FIRST
+#output summary
 print_macro_summary(score, bullish_pct, confidence, regime)
 
-# BUILD FULL REPORT TEXT FOR GEMINI
+#report text for gemini
 macro_output = "\n".join(report_lines)
 
-# CREATE GEMINI PROMPT
-prompt = f"""
-You are a professional macro market analyst.
+#gemini prompt template
+with open("prompt_macro_analysis.txt", "r", encoding="utf-8") as f:
+    prompt_template = f.read()
+full_prompt = f"{prompt_template}\n\nMacro Data:\n{macro_output}"
 
-Analyze the following Nasdaq macro dashboard briefly.
-
-Explain:
-1. What the current macro regime suggests
-2. Whether this is bullish or bearish for NQ
-3. Main supporting and opposing forces
-
-Keep response concise and professional.
-
-Dashboard:
-{macro_output}
-"""
-
-# CALL GEMINI
+#call gemini
 try:
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt
+        model="gemini-2.5-flash-lite",
+        contents=full_prompt
     )
     gemini_analysis = response.text
 
 except Exception as e:
     gemini_analysis = f"Gemini API Error: {e}"
 
-# WRITE GEMINI ANALYSIS TO OUTPUT
+#gemini output into file and print
 log_print("\n" + "=" * 40)
 log_print("**AI ANALYSIS**")
 log_print("=" * 40)
 log_print(gemini_analysis)
 
-# CLOSE FILE
+
 output_file.close()

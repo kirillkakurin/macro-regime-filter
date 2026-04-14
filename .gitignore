@@ -7,3 +7,6 @@
 
 # Output data
 outputs/
+
+#Promt templates
+*.txt
